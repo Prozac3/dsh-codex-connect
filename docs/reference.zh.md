@@ -187,6 +187,8 @@ dsh plugin --profile web exec dsh-codex-connect login --device-code
 
 保持命令运行，在任意浏览器打开它输出的验证 URL，登录后输入一次性设备码。命令最多轮询 15 分钟，交换授权码后将凭据写入 DSH 主机。不使用 localhost 回调服务器、1455 端口或本地图形浏览器。不要分享 URL 或设备码；如果提供方提示设备登录不可用，请改用浏览器登录，或检查配置的 OpenAI 服务端。
 
+Web 前端也会在普通登录操作旁提供**使用设备码登录**。浏览器通过独立的同源路由取得挑战；DSH 进程负责轮询和交换 token，因此用户不需要登录 DSH 主机的 shell，也不需要转发 localhost 回调。授权等待期间，账户状态响应会继续提供挑战，刷新页面后仍可恢复显示设备码。
+
 ### 迁移与冲突
 
 如果启动报告 `openai-codex` 冲突，请检查有效配置，只移除已经确认的旧 `dsh-codex` bundle 或手动 provider 条目。不要删除凭据或无关 provider。包迁移及 Alpha 4.10 搜索历史修复见 [MIGRATION.md](../MIGRATION.md)。

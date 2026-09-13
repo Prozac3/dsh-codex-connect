@@ -187,6 +187,8 @@ dsh plugin --profile web exec dsh-codex-connect login --device-code
 
 Leave the command running while you open its verification URL on any browser, sign in, and enter the printed one-time code. The command polls for up to 15 minutes, exchanges the authorization code, and writes the credential on the DSH host. This mode does not use the localhost callback server, port 1455, or a local browser. Never share the URL or code; if the provider reports that device login is unavailable, use browser login or verify the configured OpenAI server.
 
+The Web UI provides the same flow through **Use device code** next to its normal sign-in action. The browser calls a dedicated same-origin route to obtain the challenge; the DSH process performs polling and token exchange, so the user never needs a shell on the DSH host or a forwarded localhost callback. The challenge remains available from the account status response while authorization is pending, allowing a page reload to recover the displayed code.
+
 ### Migration and conflicts
 
 If startup reports an `openai-codex` collision, inspect the effective configuration and remove only the confirmed legacy `dsh-codex` bundle or manual provider row. Do not delete credentials or unrelated providers. See [MIGRATION.md](../MIGRATION.md) for package migration and repair of Alpha 4.10 search histories.

@@ -5,6 +5,7 @@ import {
   OPENAI_CODEX_AUTH_ACCOUNTS_PATH,
   OPENAI_CODEX_AUTH_CANCEL_PATH,
   OPENAI_CODEX_AUTH_CALLBACK_PATH,
+  OPENAI_CODEX_AUTH_DEVICE_LOGIN_PATH,
   OPENAI_CODEX_AUTH_LOGIN_PATH,
   OPENAI_CODEX_AUTH_LOGOUT_PATH,
   OPENAI_CODEX_AUTH_STATUS_PATH,
@@ -42,10 +43,17 @@ export interface AccountSnapshot {
   accounts: readonly AccountSummary[]
   operation: AccountOperation
   loginUrl?: string
+  deviceCode?: DeviceCodeChallenge
   operationError?: string
   /** Non-sensitive UI lifecycle marker; never contains callback material. */
   authorizationRevision?: number
   callbackFeedback?: 'callbackAccepted' | 'callbackInvalid' | 'callbackNoPending' | 'callbackFailed' | 'callbackUnconfirmed'
+}
+
+export interface DeviceCodeChallenge {
+  verificationUri: string
+  userCode: string
+  expiresInSeconds?: number
 }
 
 class AccountRequestError extends Error {}
@@ -177,6 +185,30 @@ function parseChallenge(value: unknown): { url: string } {
   return { url: url.href }
 }
 
+function parseDeviceCode(value: unknown): DeviceCodeChallenge | undefined {
+  if (!isRecord(value)) return undefined
+  const candidate = value['deviceCode']
+  if (candidate === undefined) return undefined
+  if (!isRecord(candidate) || typeof candidate['verificationUri'] !== 'string' || typeof candidate['userCode'] !== 'string'
+    || candidate['userCode'].trim() === '' || candidate['userCode'].length > 256) {
+    throw new AccountRequestError('Invalid account response')
+  }
+  let url: URL
+  try { url = new URL(candidate['verificationUri']) } catch { throw new AccountRequestError('Invalid account response') }
+  if (url.protocol !== 'https:' || url.username !== '' || url.password !== '' || url.hash !== '') {
+    throw new AccountRequestError('Invalid account response')
+  }
+  const expiresInSeconds = candidate['expiresInSeconds']
+  if (expiresInSeconds !== undefined && (typeof expiresInSeconds !== 'number' || !Number.isFinite(expiresInSeconds) || expiresInSeconds <= 0)) {
+    throw new AccountRequestError('Invalid account response')
+  }
+  return {
+    verificationUri: url.href,
+    userCode: candidate['userCode'],
+    ...(expiresInSeconds === undefined ? {} : { expiresInSeconds }),
+  }
+}
+
 async function request(path: string, method = 'GET', signal?: AbortSignal, body?: unknown): Promise<unknown> {
   const { response, value } = await requestJson(path, {
     method,
@@ -251,9 +283,10 @@ export class OpenAICodexAccountStore {
     }
   }
 
-  private async readServerState(signal?: AbortSignal): Promise<{ status: AccountStatus; accounts: readonly AccountSummary[] }> {
+  private async readServerState(signal?: AbortSignal): Promise<{ status: AccountStatus; accounts: readonly AccountSummary[]; deviceCode?: DeviceCodeChallenge }> {
     const response = await this.request(OPENAI_CODEX_AUTH_STATUS_PATH, 'GET', signal)
-    return { status: parseStatus(response), accounts: parseAccounts(response) }
+    const deviceCode = parseDeviceCode(response)
+    return { status: parseStatus(response), accounts: parseAccounts(response), ...(deviceCode === undefined ? {} : { deviceCode }) }
   }
 
   private request(path: string, method = 'GET', signal?: AbortSignal, body?: unknown): Promise<unknown> {
@@ -282,6 +315,7 @@ export class OpenAICodexAccountStore {
         busy: false,
         operation: server.status.status === 'signing-in' ? { kind: 'waiting-authorization' } : { kind: 'idle' },
         ...server.status.status === 'signing-in' && this.snapshot.loginUrl !== undefined ? { loginUrl: this.snapshot.loginUrl } : {},
+        ...server.status.status === 'signing-in' && server.deviceCode !== undefined ? { deviceCode: server.deviceCode } : {},
         ...server.status.status === 'signing-in' && this.snapshot.callbackFeedback !== undefined ? { callbackFeedback: this.snapshot.callbackFeedback } : {},
       })
     } catch (error: unknown) {
@@ -297,23 +331,33 @@ export class OpenAICodexAccountStore {
   }
 
   /** Start or reopen the server-owned authorization from a user click, retaining popup permission. */
-  async signIn(): Promise<void> {
+  async signIn(method: 'browser' | 'device_code' = 'browser'): Promise<void> {
     if (this.disposed || this.snapshot.busy) return
     this.stopPolling()
-    const popup = window.open('about:blank', '_blank')
+    const popup = method === 'browser' ? window.open('about:blank', '_blank') : null
     this.popup = popup
     if (popup !== null) popup.opener = null
     const retained = this.snapshot.status.status === 'signed-in' || this.snapshot.status.status === 'reauth-required'
       ? this.snapshot.status : { status: 'signing-in' } as const
     this.publish({ status: retained, busy: true, accounts: this.snapshot.accounts, operation: { kind: 'starting-authorization' }, authorizationRevision: (this.snapshot.authorizationRevision ?? 0) + 1 })
     try {
-      const challenge = parseChallenge(await this.request(OPENAI_CODEX_AUTH_LOGIN_PATH, 'POST'))
+      const rawChallenge = await this.request(method === 'browser' ? OPENAI_CODEX_AUTH_LOGIN_PATH : OPENAI_CODEX_AUTH_DEVICE_LOGIN_PATH, 'POST')
       if (this.disposed) { popup?.close(); return }
-      if (popup !== null) popup.location.replace(challenge.url)
-      this.publish({
-        status: retained, busy: false, accounts: this.snapshot.accounts,
-        operation: { kind: 'waiting-authorization' }, loginUrl: challenge.url,
-      })
+      if (method === 'browser') {
+        const challenge = parseChallenge(rawChallenge)
+        if (popup !== null) popup.location.replace(challenge.url)
+        this.publish({
+          status: retained, busy: false, accounts: this.snapshot.accounts,
+          operation: { kind: 'waiting-authorization' }, loginUrl: challenge.url,
+        })
+      } else {
+        const deviceCode = parseDeviceCode({ deviceCode: rawChallenge })
+        if (deviceCode === undefined) throw new AccountRequestError('Invalid account response')
+        this.publish({
+          status: retained, busy: false, accounts: this.snapshot.accounts,
+          operation: { kind: 'waiting-authorization' }, deviceCode,
+        })
+      }
     } catch (error: unknown) {
       popup?.close()
       this.publish(this.snapshot.accounts.length === 0

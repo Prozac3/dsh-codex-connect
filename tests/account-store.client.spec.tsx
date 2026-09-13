@@ -5,7 +5,7 @@ import { OpenAICodexAccountStore } from '../src/client/account-store.ts'
 import { OpenAICodexModelsCard } from '../src/client/OpenAICodexModelsCard.tsx'
 import { OpenAICodexSettings } from '../src/client/OpenAICodexSettings.tsx'
 import { en, zh } from '../src/client/locales.ts'
-import { OPENAI_CODEX_AUTH_ACCOUNTS_PATH, OPENAI_CODEX_AUTH_CANCEL_PATH, OPENAI_CODEX_AUTH_LOGIN_PATH, OPENAI_CODEX_AUTH_LOGOUT_PATH, OPENAI_CODEX_AUTH_STATUS_PATH } from '../src/auth-paths.ts'
+import { OPENAI_CODEX_AUTH_ACCOUNTS_PATH, OPENAI_CODEX_AUTH_CANCEL_PATH, OPENAI_CODEX_AUTH_DEVICE_LOGIN_PATH, OPENAI_CODEX_AUTH_LOGIN_PATH, OPENAI_CODEX_AUTH_LOGOUT_PATH, OPENAI_CODEX_AUTH_STATUS_PATH } from '../src/auth-paths.ts'
 
 const t = (key: keyof typeof en, params: Record<string, unknown> = {}) => Object.entries(params).reduce(
   (value, [name, replacement]) => value.replace(`{${name}}`, String(replacement)),
@@ -111,6 +111,34 @@ describe('shared Models and Plugin account state', () => {
     expect(screen.getByRole('button', { name: messages.authorize })).toBeTruthy()
     expect(screen.queryByText(messages.accountHeading)).toBeNull()
     expect(screen.queryByRole('button', { name: messages.viewQuota })).toBeNull()
+    account.dispose()
+  })
+
+  it('starts device-code authorization from the browser without opening a popup', async () => {
+    const popup = vi.spyOn(window, 'open')
+    const device = { verificationUri: 'https://auth.openai.com/codex/device', userCode: 'ABCD-1234', expiresInSeconds: 900 }
+    let pending = false
+    const fetchMock = vi.fn(async (path: string) => {
+      if (path === OPENAI_CODEX_AUTH_DEVICE_LOGIN_PATH) {
+        pending = true
+        return rawJson(device)
+      }
+      return rawJson(pending ? { status: 'signing-in', deviceCode: device, accounts: [] } : { status: 'signed-out', accounts: [] })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const account = new OpenAICodexAccountStore()
+    render(<OpenAICodexSettings t={t} account={account} embedded />)
+    await screen.findByRole('button', { name: en.deviceCodeLogin })
+    fireEvent.click(screen.getByRole('button', { name: en.deviceCodeLogin }))
+    expect(await screen.findByText(device.userCode)).toBeTruthy()
+    expect(screen.getByRole('link', { name: en.openLoginInBrowser }).getAttribute('href')).toBe(device.verificationUri)
+    expect(popup).not.toHaveBeenCalled()
+    expect(fetchMock.mock.calls.some(([path]) => path === OPENAI_CODEX_AUTH_DEVICE_LOGIN_PATH)).toBe(true)
+    fireEvent.click(screen.getByRole('button', { name: en.reopenAuthorization }))
+    await waitFor(() => {
+      expect(fetchMock.mock.calls.filter(([path]) => path === OPENAI_CODEX_AUTH_DEVICE_LOGIN_PATH)).toHaveLength(2)
+    })
+    expect(fetchMock.mock.calls.some(([path]) => path === OPENAI_CODEX_AUTH_LOGIN_PATH)).toBe(false)
     account.dispose()
   })
 

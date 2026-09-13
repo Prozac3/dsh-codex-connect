@@ -46,6 +46,8 @@ dsh plugin --profile web exec dsh-codex-connect login --device-code
 
 Keep the command running, open the printed verification URL on any browser, sign in, and enter the one-time code. The command polls for up to 15 minutes and saves the resulting OAuth credential on the DSH host; it does not need port 1455, callback forwarding, or a local browser. If the server reports that device login is unavailable, use the browser flow instead.
 
+The Web UI also exposes **Use device code** beside the normal sign-in button. This is the recommended path when the user can reach Harness in a browser but the DSH host is remote: the UI receives only the verification URL and one-time code, while the server polls OpenAI and stores the credential. No server shell, localhost callback, or port forwarding is required.
+
 ### 3. Check the installation
 
 ```sh

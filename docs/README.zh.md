@@ -46,6 +46,8 @@ dsh plugin --profile web exec dsh-codex-connect login --device-code
 
 保持命令运行，在任意浏览器打开它输出的验证 URL，登录后输入一次性设备码。命令最多轮询 15 分钟，并将 OAuth 凭据保存到 DSH 主机；不需要 1455 端口、回调转发或本地图形浏览器。如果服务端提示设备登录不可用，请改用浏览器流程。
 
+Web 前端的普通登录按钮旁也提供**使用设备码登录**。当用户可以在浏览器访问 Harness、但 DSH 主机在远程设备上时，推荐使用此方式：前端只接收验证 URL 和一次性设备码，服务器负责轮询 OpenAI 并保存凭据。不需要服务器 shell、localhost 回调或端口转发。
+
 ### 3. 检查安装
 
 ```sh

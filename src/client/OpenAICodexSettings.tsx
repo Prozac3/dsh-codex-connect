@@ -213,8 +213,9 @@ export function AccountActions({ t, store, snapshot, compact = false }: {
     || operation.kind === 'waiting-authorization'
     || operation.kind === 'cancelling-authorization'
     || status.status === 'signing-in'
+  const continueLogin = snapshot.deviceCode === undefined ? 'browser' : 'device_code'
   if (authorizing) return <div style={rowStyle}>
-    <button type="button" style={buttonStyle} disabled={busy} onClick={() => { void store.signIn() }}>
+    <button type="button" style={buttonStyle} disabled={busy} onClick={() => { void store.signIn(continueLogin) }}>
       {busy ? t('working') : t(compact ? 'continueAuthorization' : 'reopenAuthorization')}
     </button>
     <button type="button" style={buttonStyle} disabled={busy} onClick={() => { void store.cancel() }}>{t('cancelSignIn')}</button>
@@ -222,8 +223,12 @@ export function AccountActions({ t, store, snapshot, compact = false }: {
   if (status.status === 'signed-in') return null
   const retry = status.status === 'error' || status.status === 'reauth-required'
   const action = retry ? t(compact ? 'reauthorize' : 'loginAgain') : t(compact ? 'authorize' : 'login')
-  return <button type="button" style={primaryButtonStyle} disabled={busy}
-    onClick={() => { void store.signIn() }}>{busy ? t('working') : action}</button>
+  return <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+    <button type="button" style={primaryButtonStyle} disabled={busy}
+      onClick={() => { void store.signIn() }}>{busy ? t('working') : action}</button>
+    <button type="button" style={buttonStyle} disabled={busy}
+      onClick={() => { void store.signIn('device_code') }}>{t('deviceCodeLogin')}</button>
+  </div>
 }
 
 /** Saved-account summary and explicit account-management actions. */
@@ -270,7 +275,7 @@ export function AccountManager({ t, store, snapshot, quotaExpanded, quotaControl
       </div>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
         {status.status === 'reauth-required' && !authorizing
-          ? <button type="button" style={primaryButtonStyle} disabled={busy} onClick={() => { void store.signIn() }}>{t('reauthorize')}</button>
+          ? <AccountActions t={t} store={store} snapshot={snapshot} compact />
           : null}
         {authorizing ? <AccountActions t={t} store={store} snapshot={snapshot} compact /> : null}
         {onToggleQuota === undefined || status.status !== 'signed-in' ? null : (
@@ -287,9 +292,14 @@ export function AccountManager({ t, store, snapshot, quotaExpanded, quotaControl
     {expanded ? <div id={accountsPanelId} style={accountPanelStyle}>
       <div style={{ ...rowStyle, padding: '10px 14px', background: 'var(--dsw-alias-bg-layer-2, rgba(0, 0, 0, 0.04))' }}>
         <strong>{t('savedAccounts')} · {accounts.length}</strong>
-        <button type="button" style={primaryButtonStyle} disabled={busy || authorizing} onClick={() => { void store.signIn() }}>
-          {operation.kind === 'starting-authorization' ? t('working') : t('addAccount')}
-        </button>
+        <span style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+          <button type="button" style={primaryButtonStyle} disabled={busy || authorizing} onClick={() => { void store.signIn() }}>
+            {operation.kind === 'starting-authorization' ? t('working') : t('addAccount')}
+          </button>
+          <button type="button" style={buttonStyle} disabled={busy || authorizing} onClick={() => { void store.signIn('device_code') }}>
+            {t('deviceCodeLogin')}
+          </button>
+        </span>
       </div>
       {accounts.map(account => <div key={account.accountKey} style={accountRowStyle}>
         <span style={accountIdentityStyle}>
@@ -369,7 +379,7 @@ export function AccountFeedback({ t, snapshot, store }: {
   snapshot: AccountSnapshot
   store: OpenAICodexAccountStore
 }) {
-  const { status, loginUrl, operationError } = snapshot
+  const { status, loginUrl, deviceCode, operationError } = snapshot
   const [copied, setCopied] = useState(false)
   const [copyFailed, setCopyFailed] = useState(false)
   const trustedOriginCommand = `dsh plugin --profile web exec dsh-codex-connect trust-origin ${window.location.origin}`
@@ -387,7 +397,16 @@ export function AccountFeedback({ t, snapshot, store }: {
 
   return <>
     {loginUrl === undefined ? null : <p style={bodyStyle}>{t('authorizationHelp')}</p>}
-    {loginUrl !== undefined || snapshot.operation.kind === 'waiting-authorization' && !snapshot.busy ? (
+    {deviceCode === undefined ? null : <div style={{ display: 'flex', flexDirection: 'column', gap: 8, flexBasis: '100%' }}>
+      <p style={bodyStyle}>{t('deviceCodeHelp')}</p>
+      <a href={deviceCode.verificationUri} target="_blank" rel="noopener noreferrer"
+        style={{ ...primaryButtonStyle, display: 'inline-flex', alignItems: 'center', width: 'fit-content', textDecoration: 'none' }}>
+        {t('openLoginInBrowser')}
+      </a>
+      <code style={{ ...commandStyle, width: 'fit-content', fontSize: 20, letterSpacing: 2 }}>{deviceCode.userCode}</code>
+      {deviceCode.expiresInSeconds === undefined ? null : <p style={bodyStyle}>{t('deviceCodeExpiry', { minutes: Math.ceil(deviceCode.expiresInSeconds / 60) })}</p>}
+    </div>}
+    {loginUrl !== undefined || snapshot.operation.kind === 'waiting-authorization' && !snapshot.busy && deviceCode === undefined ? (
       <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12 }}>
         {loginUrl === undefined ? null : <a
           href={loginUrl}
@@ -397,7 +416,7 @@ export function AccountFeedback({ t, snapshot, store }: {
         >
           {t('openLoginInBrowser')}
         </a>}
-        {snapshot.operation.kind === 'waiting-authorization' && !snapshot.busy
+        {snapshot.operation.kind === 'waiting-authorization' && !snapshot.busy && deviceCode === undefined
           ? <ManualCallbackForm key={snapshot.authorizationRevision ?? 0} t={t} store={store} /> : null}
       </div>
     ) : null}

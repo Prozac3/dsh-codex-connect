@@ -3,7 +3,7 @@ import type { AuthInteraction } from '@earendil-works/pi-ai'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { Readable } from 'node:stream'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { OpenAICodexWebAuth, OPENAI_CODEX_AUTH_CALLBACK_PATH, OPENAI_CODEX_AUTH_LOGIN_PATH, registerOpenAICodexAuthRoutes } from '../src/auth-routes.ts'
+import { OpenAICodexWebAuth, OPENAI_CODEX_AUTH_CALLBACK_PATH, OPENAI_CODEX_AUTH_DEVICE_LOGIN_PATH, OPENAI_CODEX_AUTH_LOGIN_PATH, registerOpenAICodexAuthRoutes } from '../src/auth-routes.ts'
 import type { OpenAICodexCredentialStore } from '../src/store.ts'
 import type { OpenAICodexTrustedOriginsStore } from '../src/trusted-origins.ts'
 
@@ -48,6 +48,32 @@ afterEach(async () => {
 })
 
 describe('manual callback state boundary', () => {
+  it('starts a device-code flow without creating a localhost callback prompt', async () => {
+    let selected: string | undefined
+    mocked.login.mockImplementation(async (value: AuthInteraction) => {
+      selected = await value.prompt({
+        type: 'select', message: 'Select login method',
+        options: [{ id: 'browser', label: 'Browser' }, { id: 'device_code', label: 'Device code' }],
+      })
+      value.notify({
+        type: 'device_code', userCode: 'ABCD-1234', verificationUri: 'https://auth.openai.com/codex/device',
+        expiresInSeconds: 900,
+      })
+      await new Promise<void>(resolve => { value.signal?.addEventListener('abort', () => { resolve() }, { once: true }) })
+    })
+    const instance = auth()
+    await expect(instance.signIn('device_code')).resolves.toEqual({
+      verificationUri: 'https://auth.openai.com/codex/device', userCode: 'ABCD-1234', expiresInSeconds: 900,
+    })
+    expect(selected).toBe('device_code')
+    expect(instance.pendingDeviceCode()).toEqual({
+      verificationUri: 'https://auth.openai.com/codex/device', userCode: 'ABCD-1234', expiresInSeconds: 900,
+    })
+    expect(instance.submitCallback(callback)).toBe(409)
+    await instance.cancel()
+    expect(instance.pendingDeviceCode()).toBeUndefined()
+  })
+
   it('accepts a full URL exactly once without fetching it or waiting for login completion', async () => {
     const fetch = vi.fn()
     vi.stubGlobal('fetch', fetch)
@@ -184,6 +210,7 @@ function routes(trusted = false) {
   return {
     callback: result.find(route => route.path === OPENAI_CODEX_AUTH_CALLBACK_PATH)!,
     login: result.find(route => route.path === OPENAI_CODEX_AUTH_LOGIN_PATH)!,
+    device: result.find(route => route.path === OPENAI_CODEX_AUTH_DEVICE_LOGIN_PATH)!,
   }
 }
 async function call(route: Route, options: {
@@ -209,6 +236,18 @@ async function call(route: Route, options: {
 }
 
 describe('manual callback HTTP boundary', () => {
+  it('returns a device challenge from the browser-owned login route', async () => {
+    mocked.login.mockImplementation(async (value: AuthInteraction) => {
+      value.notify({ type: 'device_code', userCode: 'ABCD-1234', verificationUri: 'https://auth.openai.com/codex/device', expiresInSeconds: 900 })
+      await new Promise<void>(resolve => { value.signal?.addEventListener('abort', () => { resolve() }, { once: true }) })
+    })
+    const result = await call(routes().device)
+    expect(result.status).toBe(200)
+    expect(JSON.parse(result.body)).toEqual({
+      verificationUri: 'https://auth.openai.com/codex/device', userCode: 'ABCD-1234', expiresInSeconds: 900,
+    })
+  })
+
   it('returns immediately on acceptance while the client continues polling existing status', async () => {
     const endpoints = routes()
     // Login itself intentionally returns its authorization URL; do not pass through the callback secrecy assertion.

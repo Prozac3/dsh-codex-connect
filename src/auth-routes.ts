@@ -16,6 +16,7 @@ import type { OpenAICodexUsage } from './usage.ts'
 import type { OpenAICodexQuotaState } from './quota-state.ts'
 import {
   OPENAI_CODEX_AUTH_LOGIN_PATH,
+  OPENAI_CODEX_AUTH_DEVICE_LOGIN_PATH,
   OPENAI_CODEX_AUTH_CALLBACK_PATH,
   OPENAI_CODEX_AUTH_LOGOUT_PATH,
   OPENAI_CODEX_AUTH_STATUS_PATH,
@@ -34,6 +35,7 @@ import { publicAuthError as safeMessage } from './auth-error.ts'
 
 export {
   OPENAI_CODEX_AUTH_LOGIN_PATH,
+  OPENAI_CODEX_AUTH_DEVICE_LOGIN_PATH,
   OPENAI_CODEX_AUTH_CALLBACK_PATH,
   OPENAI_CODEX_AUTH_LOGOUT_PATH,
   OPENAI_CODEX_AUTH_STATUS_PATH,
@@ -57,9 +59,19 @@ export type OpenAICodexWebAuthStatus =
   | { status: 'signed-in'; usage: OpenAICodexUsage; quotaError?: string }
   | { status: 'error'; message: string }
 
-interface LoginChallenge {
+interface BrowserLoginChallenge {
   url: string
 }
+
+/** Public device-code challenge; it contains no access or refresh token. */
+export interface OpenAICodexDeviceCodeChallenge {
+  verificationUri: string
+  userCode: string
+  expiresInSeconds?: number
+}
+
+type LoginChallenge = BrowserLoginChallenge | OpenAICodexDeviceCodeChallenge
+type OpenAICodexLoginMethod = 'browser' | 'device_code'
 
 /** Testable timing boundary; production uses the exported 30-second ceiling. */
 export interface OpenAICodexWebAuthOptions {
@@ -94,6 +106,7 @@ interface PendingManualPrompt {
 /** Validate locally; never navigate to, fetch, or include the submitted URL in errors. */
 function validCallbackUrl(value: string, challenge: LoginChallenge): boolean {
   // Do not allow URL parser normalization to turn a different redirect into the expected one.
+  if (!('url' in challenge)) return false
   if (value.split('?')[0] !== OAUTH_REDIRECT_URI || /[\s\\#]/u.test(value)) return false
   try {
     const callback = new URL(value)
@@ -132,6 +145,7 @@ export class OpenAICodexWebAuth {
   private readonly proxyManager: OpenAICodexProxyManager | undefined
   private readonly resolveProxyUrl: () => string | undefined
   private readonly quotaState: OpenAICodexQuotaState | undefined
+  private loginMethod: OpenAICodexLoginMethod | undefined
 
   constructor(
     private readonly store: OpenAICodexCredentialStore,
@@ -158,21 +172,35 @@ export class OpenAICodexWebAuth {
   }
 
   /** Start or join the current browser-login operation. */
-  async signIn(): Promise<LoginChallenge> {
+  async signIn(): Promise<BrowserLoginChallenge>
+  /** Start or join the current device-code operation. */
+  async signIn(method: 'device_code'): Promise<OpenAICodexDeviceCodeChallenge>
+  async signIn(method: OpenAICodexLoginMethod = 'browser'): Promise<LoginChallenge> {
     while (this.transition !== undefined) await this.transition
     if (this.disposed) throw new Error('OpenAI Codex plugin disposed')
-    if (this.operation === undefined) this.start()
-    if (this.challenge !== undefined) return this.challenge
-    return new Promise<LoginChallenge>((resolve, reject) => {
-      this.challengeWaiters.push({ resolve, reject })
-    })
+    if (this.operation === undefined) this.start(method)
+    if (this.loginMethod !== method) throw new Error('OpenAI Codex authorization is already using another login method')
+    const challenge = this.challenge === undefined
+      ? await new Promise<LoginChallenge>((resolve, reject) => { this.challengeWaiters.push({ resolve, reject }) })
+      : this.challenge
+    if (method === 'browser') {
+      if (!('url' in challenge)) throw new Error('OpenAI Codex returned a device-code challenge for browser login')
+      return challenge
+    }
+    if (!('verificationUri' in challenge)) throw new Error('OpenAI Codex returned a browser challenge for device-code login')
+    return challenge
+  }
+
+  /** Return the pending device-code challenge for status projection and reload recovery. */
+  pendingDeviceCode(): OpenAICodexDeviceCodeChallenge | undefined {
+    return this.challenge !== undefined && 'verificationUri' in this.challenge ? this.challenge : undefined
   }
 
   /** Accept exactly once, without waiting for token exchange or quota retrieval. */
   submitCallback(callbackUrl: string): 200 | 400 | 409 {
     const pending = this.pendingManualPrompt
     if (this.disposed || this.transition !== undefined || this.cancellation?.signal.aborted !== false
-      || pending === undefined || this.challenge === undefined) return 409
+      || pending === undefined || this.challenge === undefined || !('url' in this.challenge)) return 409
     if (!validCallbackUrl(callbackUrl, this.challenge)) return 400
     this.manualPromptClosed = true
     pending.resolve(callbackUrl)
@@ -271,9 +299,10 @@ export class OpenAICodexWebAuth {
     }
   }
 
-  private start(): void {
+  private start(method: OpenAICodexLoginMethod): void {
     const cancellation = new AbortController()
     this.cancellation = cancellation
+    this.loginMethod = method
     this.manualPromptClosed = false
     this.challenge = undefined
     this.state = { status: 'signing-in' }
@@ -288,7 +317,7 @@ export class OpenAICodexWebAuth {
     const login = () => loginOpenAICodex({
       signal: cancellation.signal,
       prompt: prompt => prompt.type === 'select'
-        ? Promise.resolve('browser')
+        ? Promise.resolve(method)
         : prompt.type === 'manual_code'
           ? this.waitForManualPrompt(prompt, cancellation.signal)
           : waitForPromptAbort(prompt, cancellation.signal),
@@ -302,7 +331,7 @@ export class OpenAICodexWebAuth {
         this.manualPromptClosed = true
         this.pendingManualPrompt?.reject(new Error('OpenAI Codex manual callback is unavailable'))
         if (this.challenge === undefined) {
-          const error = new Error('OpenAI Codex sign-in finished without an authorization URL')
+          const error = new Error('OpenAI Codex sign-in finished without a login challenge')
           this.rejectChallenge(error)
           this.state = { status: 'error', message: safeMessage(error) }
           return
@@ -323,11 +352,52 @@ export class OpenAICodexWebAuth {
       this.challenge = undefined
       this.operation = undefined
       this.cancellation = undefined
+      this.loginMethod = undefined
     })
   }
 
   private onEvent(event: AuthEvent): void {
-    if (event.type !== 'auth_url') return
+    if (event.type === 'auth_url') {
+      if (this.loginMethod === 'device_code') {
+        this.cancelSignIn(new Error('OpenAI Codex returned a browser challenge for device-code login'))
+        return
+      }
+      this.onBrowserAuthUrl(event)
+      return
+    }
+    if (event.type !== 'device_code') return
+    if (this.loginMethod !== 'device_code') {
+      this.cancelSignIn(new Error('OpenAI Codex returned a device-code challenge for browser login'))
+      return
+    }
+    let url: URL
+    try {
+      url = new URL(event.verificationUri)
+    } catch {
+      this.cancelSignIn(new Error('OpenAI returned an invalid device verification URL'))
+      return
+    }
+    if (url.protocol !== 'https:' || url.username !== '' || url.password !== '' || url.hash !== ''
+      || event.userCode.trim() === '' || event.userCode.length > 256) {
+      this.cancelSignIn(new Error('OpenAI returned an unsafe device-code challenge'))
+      return
+    }
+    if (event.expiresInSeconds !== undefined
+      && (!Number.isFinite(event.expiresInSeconds) || event.expiresInSeconds <= 0)) {
+      this.cancelSignIn(new Error('OpenAI returned an invalid device-code expiry'))
+      return
+    }
+    const challenge: OpenAICodexDeviceCodeChallenge = {
+      verificationUri: url.href,
+      userCode: event.userCode,
+      ...(event.expiresInSeconds === undefined ? {} : { expiresInSeconds: event.expiresInSeconds }),
+    }
+    this.challenge = challenge
+    this.clearChallengeTimer()
+    for (const waiter of this.challengeWaiters.splice(0)) waiter.resolve(challenge)
+  }
+
+  private onBrowserAuthUrl(event: Extract<AuthEvent, { type: 'auth_url' }>): void {
     let url: URL
     try {
       url = new URL(event.url)
@@ -640,7 +710,8 @@ export function registerOpenAICodexAuthRoutes(
           if (!await authorize(req, res)) return
           const snapshot = await store.captureActiveAccount()
           const [status, accounts] = await Promise.all([auth.status(snapshot), snapshot.accounts()])
-          json(res, 200, { ...status, accounts })
+          const deviceCode = auth.pendingDeviceCode()
+          json(res, 200, { ...status, accounts, ...(deviceCode === undefined ? {} : { deviceCode }) })
         },
       }),
       ctx.webServer.register({
@@ -651,6 +722,19 @@ export function registerOpenAICodexAuthRoutes(
           if (!await authorize(req, res)) return
           try {
             json(res, 200, await auth.signIn())
+          } catch (error: unknown) {
+            json(res, 500, { error: safeMessage(error) })
+          }
+        },
+      }),
+      ctx.webServer.register({
+        kind: 'exact',
+        path: OPENAI_CODEX_AUTH_DEVICE_LOGIN_PATH,
+        handler: async (req, res) => {
+          if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' })
+          if (!await authorize(req, res)) return
+          try {
+            json(res, 200, await auth.signIn('device_code'))
           } catch (error: unknown) {
             json(res, 500, { error: safeMessage(error) })
           }
