@@ -38,6 +38,14 @@ Open **Settings → Models → Openai-Codex → Authorize**, then complete appro
 
 Never paste an authorization URL, code, token, or account identifier into an issue, log, chat, or configuration file. For a browser on another device, the optional manual callback form can complete the pending login without forwarding the localhost callback port; follow [Remote browser authorization](docs/reference.md#remote-browser-authorization).
 
+For a DSH host without a graphical browser, use the headless device-code flow from SSH or a container:
+
+```sh
+dsh plugin --profile web exec dsh-codex-connect login --device-code
+```
+
+Keep the command running, open the printed verification URL on any browser, sign in, and enter the one-time code. The command polls for up to 15 minutes and saves the resulting OAuth credential on the DSH host; it does not need port 1455, callback forwarding, or a local browser. If the server reports that device login is unavailable, use the browser flow instead.
+
 ### 3. Check the installation
 
 ```sh

@@ -177,6 +177,16 @@ The origin allowlist controls access to DSH; it does not forward OpenAI's localh
 
 The callback must match the pending flow's redirect URI and OAuth state; code-only input, missing or mismatched state, duplicate parameters, and reused callbacks are rejected. Submission uses the existing same-origin/trusted-origin checks and a bounded JSON POST. The pasted URL is not fetched, logged, or persisted by the plugin, and the input is cleared on submission. Tokens remain on the DSH host. Only paste into this dedicated field: the URL contains a short-lived credential and must not be shared in chat, issues, logs, or configuration. Use an SSH tunnel for untrusted networks; manual callback entry does not make an unauthenticated public DSH deployment safe or relax its origin policy.
 
+### Headless device-code authorization
+
+When the DSH host has no graphical browser, start device-code authorization from an SSH session or container:
+
+```sh
+dsh plugin --profile web exec dsh-codex-connect login --device-code
+```
+
+Leave the command running while you open its verification URL on any browser, sign in, and enter the printed one-time code. The command polls for up to 15 minutes, exchanges the authorization code, and writes the credential on the DSH host. This mode does not use the localhost callback server, port 1455, or a local browser. Never share the URL or code; if the provider reports that device login is unavailable, use browser login or verify the configured OpenAI server.
+
 ### Migration and conflicts
 
 If startup reports an `openai-codex` collision, inspect the effective configuration and remove only the confirmed legacy `dsh-codex` bundle or manual provider row. Do not delete credentials or unrelated providers. See [MIGRATION.md](../MIGRATION.md) for package migration and repair of Alpha 4.10 search histories.

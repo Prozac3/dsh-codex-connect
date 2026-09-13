@@ -57,6 +57,9 @@ function notify(event: AuthEvent, useBrowser: boolean): void {
       break
     case 'device_code':
       process.stdout.write(`Open this URL to sign in:\n${event.verificationUri}\nEnter code: ${event.userCode}\n`)
+      if (event.expiresInSeconds !== undefined && Number.isFinite(event.expiresInSeconds) && event.expiresInSeconds > 0) {
+        process.stdout.write(`This code expires in ${String(Math.ceil(event.expiresInSeconds / 60))} minutes.\n`)
+      }
       if (useBrowser) openBrowser(event.verificationUri)
       break
     case 'info':
@@ -293,7 +296,9 @@ export async function run(argv: readonly string[]): Promise<number> {
         try {
           await loginOpenAICodex({
             prompt: prompt => answerPrompt(prompt, deviceCode, (text, options) => readline.question(text, options)),
-            notify: event => notify(event, true),
+            // Device-code login is intended for SSH, containers, and other hosts
+            // without a graphical session; never invoke xdg-open in that mode.
+            notify: event => notify(event, !deviceCode),
           })
         } finally {
           readline.close()

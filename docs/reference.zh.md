@@ -177,6 +177,16 @@ origin allowlist 只控制访问 DSH 的权限，不会把 OpenAI 跳转到浏�
 
 回调必须匹配当前流程的 redirect URI 和 OAuth state；仅 code、缺少或不匹配的 state、重复参数及重复使用的回调都会被拒绝。提交使用现有同源／可信 origin 检查以及大小受限的 JSON POST。插件不会访问、记录或持久化粘贴的 URL，提交时会清空输入。token 仍保存在 DSH 主机上。只应粘贴到此专用输入框：URL 包含短期凭据，不能分享至聊天、issue、日志或配置中。网络不可信时请使用 SSH tunnel；手动回调不代表可以安全地公开无认证的 DSH 服务，也不会放宽 origin 策略。
 
+### 无头设备码授权
+
+当 DSH 主机没有图形浏览器时，可以从 SSH 会话或容器启动设备码授权：
+
+```sh
+dsh plugin --profile web exec dsh-codex-connect login --device-code
+```
+
+保持命令运行，在任意浏览器打开它输出的验证 URL，登录后输入一次性设备码。命令最多轮询 15 分钟，交换授权码后将凭据写入 DSH 主机。不使用 localhost 回调服务器、1455 端口或本地图形浏览器。不要分享 URL 或设备码；如果提供方提示设备登录不可用，请改用浏览器登录，或检查配置的 OpenAI 服务端。
+
 ### 迁移与冲突
 
 如果启动报告 `openai-codex` 冲突，请检查有效配置，只移除已经确认的旧 `dsh-codex` bundle 或手动 provider 条目。不要删除凭据或无关 provider。包迁移及 Alpha 4.10 搜索历史修复见 [MIGRATION.md](../MIGRATION.md)。

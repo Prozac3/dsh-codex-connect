@@ -10,7 +10,10 @@ const mocked = vi.hoisted(() => ({
   migrateHistory: vi.fn(),
   authPath: vi.fn(() => '/Users/fixture/.dsh/openai-codex-auth.json'),
   authStatus: vi.fn(),
+  spawn: vi.fn(() => ({ on: vi.fn(), unref: vi.fn() })),
 }))
+
+vi.mock('node:child_process', () => ({ spawn: mocked.spawn }))
 
 vi.mock('../src/index.ts', () => ({
   diagnoseOpenAICodex: mocked.diagnose,
@@ -46,6 +49,36 @@ describe('dsh-codex-connect CLI', () => {
     vi.spyOn(process.stderr, 'write').mockImplementation(chunk => { output += String(chunk); return true })
     await expect(run(['login'])).resolves.toBe(1)
     expect(output).not.toContain('opaque-fixture-secret')
+  })
+
+  it('runs device-code login without opening a local browser', async () => {
+    mocked.login.mockImplementation(async (interaction: {
+      prompt(prompt: { type: 'select'; message: string; options: readonly { id: string; label: string }[] }): Promise<string>
+      notify(event: { type: 'device_code'; userCode: string; verificationUri: string; expiresInSeconds: number }): void
+    }) => {
+      await expect(interaction.prompt({
+        type: 'select',
+        message: 'Select OpenAI Codex login method:',
+        options: [{ id: 'browser', label: 'Browser' }, { id: 'device_code', label: 'Device code' }],
+      })).resolves.toBe('device_code')
+      interaction.notify({
+        type: 'device_code',
+        userCode: 'ABCD-1234',
+        verificationUri: 'https://auth.openai.com/codex/device',
+        expiresInSeconds: 900,
+      })
+    })
+    let output = ''
+    vi.spyOn(process.stdout, 'write').mockImplementation((chunk: string | Uint8Array) => {
+      output += String(chunk)
+      return true
+    })
+
+    await expect(run(['login', '--device-code'])).resolves.toBe(0)
+    expect(output).toContain('https://auth.openai.com/codex/device')
+    expect(output).toContain('ABCD-1234')
+    expect(output).toContain('expires in 15 minutes')
+    expect(mocked.spawn).not.toHaveBeenCalled()
   })
   it('trusts, lists, and untrusts exact origins through the server CLI', async () => {
     root = await mkdtemp(join(tmpdir(), 'dsh-codex-connect-bin-'))

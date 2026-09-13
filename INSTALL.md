@@ -85,6 +85,14 @@ Alpha 4.33 omits the `modelErrors` profile field required by RC model packages, 
 
 7. If the user explicitly requests login, open **Settings → Plugins → Plugin configuration → Codex Connect**, or check `status` and then use `login` or `login --device-code`. OAuth approval belongs to the user.
 
+   For a DSH host without a graphical browser, run the device-code flow from SSH or a container and keep it attached until it completes:
+
+   ```sh
+   dsh plugin --profile web exec dsh-codex-connect login --device-code
+   ```
+
+   Open the printed verification URL on any browser, sign in, and enter the one-time code. This mode polls for up to 15 minutes, does not require callback port 1455 or browser forwarding, and stores the resulting credential on the DSH host. Never share the URL or code.
+
    Alpha 4.25 offers the same account actions in **Settings → Models → Openai-Codex**, plus a shared **More settings** dialog for model visibility, proxy, search, image, context-budget, and Auto-review controls. The original Plugin settings entry remains available; neither entry automatically starts login or changes model/search defaults.
 
    When signed out, select **Authorize**. When signed in, use **Sign out** or **View quota**; use **More settings** for plugin options. If authorization is abandoned, use **Reopen authorization** or **Cancel sign-in** and retry; cancellation does not delete an existing account. Pending authorization expires after 10 minutes by default (`oauthTimeoutMs` in plugin configuration, applied on load).
